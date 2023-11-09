@@ -1,0 +1,42 @@
+name: Deploy to EC2
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION }}  # Define an environment variable for the AWS region
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Get EC2 Instances with Deployment Tag
+        id: instances
+        run: |
+          INSTANCE_IDS=$(aws ec2 describe-instances --filters "Name=tag:Deployment,Values=true" --query "Reservations[].Instances[].InstanceId" --output text --region $AWS_REGION)
+          echo "Instance IDs with 'Deployment: true' tag: $INSTANCE_IDS"
+          #echo "::set-output name=instance_ids::$INSTANCE_IDS"
+          echo "instance_ids=$INSTANCE_IDS" >> $GITHUB_OUTPUT
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Deploy code to EC2 instances
+        run: |
+          INSTANCE_IDS=(${{ steps.instances.outputs.instance_ids }})
+          for INSTANCE_ID in "${INSTANCE_IDS[@]}"; do
+            PRIVATE_IP=$(aws ec2 describe-instances --instance-ids $INSTANCE_ID --query 'Reservations[].Instances[0].PrivateIpAddress' --output text --region $AWS_REGION)
+            echo "Deploying to instance $INSTANCE_ID with private IP $PRIVATE_IP"
+            scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -r ./* ubuntu@$PRIVATE_IP:/home/ubuntu/deploy
+            ssh ubuntu@$PRIVATE_IP "sudo systemctl reload nginx"
+          done
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          SSH_AUTH_SOCK: /tmp/ssh_agent.sock
